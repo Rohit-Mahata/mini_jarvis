@@ -1,0 +1,8 @@
+customtkinter
+Pillow
+sentence-transformers
+pandas
+pyttsx3
+SpeechRecognition
+PyAudio
+pvporcupine
