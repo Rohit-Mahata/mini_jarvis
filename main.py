@@ -1,216 +1,188 @@
-import customtkinter as ctk
-import pandas as pd
 import os
-import threading
-from PIL import Image
-from brain import UnifiedBrain
-from trainer import Trainer
-from voice import VoiceEngine
-from commands import CommandExecutor
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
+os.environ['OMP_NUM_THREADS'] = '1'
 
-class FridayTypingIndicator(ctk.CTkProgressBar):
-    def __init__(self, master, **kwargs):
-        super().__init__(
-            master, 
-            mode="indeterminate", 
-            width=200, 
-            height=3, 
-            progress_color="#00FFFF", 
-            **kwargs
-        )
-        self.set(0)
+import customtkinter as ctk
+import subprocess
+import sys
+import math
 
-    def start_pulse(self):
-        # Changed from grid() to pack()
-        self.pack(pady=5, anchor="w", padx=20)
-        self.start()
-
-    def stop_pulse(self):
-        self.stop()
-        # Changed from grid_forget() to pack_forget()
-        self.pack_forget()
-class JarvisVisualizer(ctk.CTkLabel):
-    def __init__(self, master, gif_path, **kwargs):
-        super().__init__(master, text="", **kwargs)
-        self.gif_path = gif_path
-        self.frames = []
-        self.current_frame = 0
-        self.load_frames()
-        self.animate()
-        
-    def load_frames(self):
-        try:
-            img = Image.open(self.gif_path)
-            while True:
-                frame = ctk.CTkImage(img.copy(), size=(300, 300))
-                self.frames.append(frame)
-                img.seek(len(self.frames))
-        except EOFError:
-            pass
-        except FileNotFoundError:
-            self.configure(text="[Jarvis Visualizer Missing]")
-            
-    def animate(self):
-        if self.frames:
-            self.configure(image=self.frames[self.current_frame])
-            self.current_frame = (self.current_frame + 1) % len(self.frames)
-            self.after(50, self.animate)
-
-class AssistantUI(ctk.CTk):
+class ModeSelector(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("AI Assistant")
-        self.geometry("800x600")
-        self.configure(fg_color="#121212")
+        self.title("A.I. ASSISTANT")
+        self.geometry("700x500")
+        self.configure(fg_color="#000000")
+        self.resizable(False, False)
 
-        self.voice_engine = VoiceEngine()
-        self.commander = CommandExecutor(self.voice_engine)
-        self.brain = UnifiedBrain()
-        self.trainer = Trainer(self.brain)
-        
-        self.base_data_frames = []
-        self.load_initial_data()
+        # Center window on screen
+        self.update_idletasks()
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        x = (sw - 700) // 2
+        y = (sh - 500) // 2
+        self.geometry(f"700x500+{x}+{y}")
 
-        self.top_frame = ctk.CTkFrame(self, fg_color="transparent", height=50)
-        self.top_frame.pack(fill="x", pady=10, padx=20)
-
-        self.train_button = ctk.CTkButton(
-            self.top_frame,
-            text="Train Brain",
-            width=100,
-            command=self.open_train_mode,
-            fg_color="#333333",
-            hover_color="#555555"
+        # ── Title ──
+        self.title_label = ctk.CTkLabel(
+            self,
+            text="A.I. ASSISTANT",
+            font=("Segoe UI Light", 28, "bold"),
+            text_color="#FFD700"
         )
-        self.train_button.pack(side="left")
+        self.title_label.pack(pady=(40, 0))
 
-        self.mode_switch = ctk.CTkSwitch(
-            self.top_frame,
-            text="FRIDAY",
-            command=self.toggle_mode,
-            progress_color="#00FFFF",
-            button_color="#1f538d",
-            button_hover_color="#14375e"
+        self.subtitle = ctk.CTkLabel(
+            self,
+            text="Select Your Interface",
+            font=("Segoe UI Light", 14),
+            text_color="#666666"
         )
-        self.mode_switch.pack(side="right")
+        self.subtitle.pack(pady=(5, 0))
 
-        self.friday_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.friday_frame.pack(fill="both", expand=True, padx=20, pady=10)
+        # ── Button Container ──
+        self.button_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.button_frame.pack(expand=True)
 
-        self.chat_display = ctk.CTkTextbox(self.friday_frame, state="disabled", fg_color="#1e1e1e", text_color="white")
-        self.chat_display.pack(fill="both", expand=True, pady=(0, 10))
+        # ── FRIDAY Button (Canvas-based glow) ──
+        self.friday_canvas = ctk.CTkCanvas(
+            self.button_frame,
+            width=240, height=240,
+            bg="#000000", highlightthickness=0
+        )
+        self.friday_canvas.grid(row=0, column=0, padx=40)
 
-        self.typing_indicator = FridayTypingIndicator(self.friday_frame)
+        # ── JARVIS Button (Canvas-based glow) ──
+        self.jarvis_canvas = ctk.CTkCanvas(
+            self.button_frame,
+            width=240, height=240,
+            bg="#000000", highlightthickness=0
+        )
+        self.jarvis_canvas.grid(row=0, column=1, padx=40)
 
-        self.input_frame = ctk.CTkFrame(self.friday_frame, fg_color="transparent")
-        self.input_frame.pack(fill="x")
+        # Glow animation state
+        self.glow_phase = 0.0
+        self.friday_hover = False
+        self.jarvis_hover = False
 
-        self.text_input = ctk.CTkEntry(self.input_frame, placeholder_text="Ask Friday...", fg_color="#1e1e1e", border_color="#333333")
-        self.text_input.pack(side="left", fill="x", expand=True, padx=(0, 10))
-        self.text_input.bind("<Return>", self.send_message)
+        # Bind hover events
+        self.friday_canvas.bind("<Enter>", lambda e: self._set_hover("friday", True))
+        self.friday_canvas.bind("<Leave>", lambda e: self._set_hover("friday", False))
+        self.jarvis_canvas.bind("<Enter>", lambda e: self._set_hover("jarvis", True))
+        self.jarvis_canvas.bind("<Leave>", lambda e: self._set_hover("jarvis", False))
 
-        self.send_button = ctk.CTkButton(self.input_frame, text="Send", command=self.send_message, fg_color="#00FFFF", text_color="black")
-        self.send_button.pack(side="right")
+        # Bind clicks
+        self.friday_canvas.bind("<Button-1>", lambda e: self.launch_friday())
+        self.jarvis_canvas.bind("<Button-1>", lambda e: self.launch_jarvis())
 
-        self.jarvis_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.jarvis_visualizer = JarvisVisualizer(self.jarvis_frame, gif_path="jarvis_loop.gif")
-        self.jarvis_visualizer.pack(expand=True)
-        
-        self.jarvis_listening = False
+        # Start animation
+        self._animate_glow()
 
-    def load_initial_data(self):
-        files = ['data/science.csv', 'data/math.csv', 'data/general.csv']
-        for file in files:
-            if os.path.exists(file):
-                self.base_data_frames.append(pd.read_csv(file))
-        
-        if os.path.exists('data/learned_knowledge.csv'):
-            self.base_data_frames.append(pd.read_csv('data/learned_knowledge.csv'))
-            
-        if self.base_data_frames:
-            self.brain.load_and_train(self.base_data_frames)
-
-    def toggle_mode(self):
-        if self.mode_switch.get() == 1:
-            self.mode_switch.configure(text="JARVIS", progress_color="#FF4500")
-            self.friday_frame.pack_forget()
-            self.jarvis_frame.pack(fill="both", expand=True, padx=20, pady=10)
-            self.jarvis_listening = True
-            threading.Thread(target=self.jarvis_listen_loop, daemon=True).start()
+    def _set_hover(self, target, state):
+        if target == "friday":
+            self.friday_hover = state
         else:
-            self.mode_switch.configure(text="FRIDAY", progress_color="#00FFFF")
-            self.jarvis_frame.pack_forget()
-            self.friday_frame.pack(fill="both", expand=True, padx=20, pady=10)
-            self.jarvis_listening = False
+            self.jarvis_hover = state
 
-    def jarvis_listen_loop(self):
-        while self.jarvis_listening:
-            command = self.voice_engine.listen()
-            if command:
-                if "open" in command or "shutdown" in command or "restart" in command:
-                    self.commander.execute(command)
-                else:
-                    answer = self.brain.get_answer(command)
-                    if answer:
-                        self.voice_engine.speak(answer)
-                    else:
-                        self.voice_engine.speak("I don't have that information. Please train me.")
+    def _draw_glowing_button(self, canvas, label, base_color_rgb, glow_intensity, is_hover):
+        canvas.delete("all")
+        w, h = 240, 240
+        cx, cy = w // 2, h // 2
 
-    def open_train_mode(self):
-        train_window = ctk.CTkToplevel(self)
-        train_window.title("Train Brain")
-        train_window.geometry("400x350")
-        train_window.attributes('-topmost', True)
-        
-        ctk.CTkLabel(train_window, text="Category:").pack(pady=(10, 0))
-        category_entry = ctk.CTkEntry(train_window, width=300)
-        category_entry.pack(pady=5)
-        
-        ctk.CTkLabel(train_window, text="Question:").pack(pady=(10, 0))
-        question_entry = ctk.CTkEntry(train_window, width=300)
-        question_entry.pack(pady=5)
-        
-        ctk.CTkLabel(train_window, text="Answer:").pack(pady=(10, 0))
-        answer_entry = ctk.CTkEntry(train_window, width=300)
-        answer_entry.pack(pady=5)
-        
-        def save_knowledge():
-            cat = category_entry.get()
-            q = question_entry.get()
-            a = answer_entry.get()
-            if cat and q and a:
-                self.trainer.add_knowledge(cat, q, a, self.base_data_frames)
-                train_window.destroy()
-                
-        ctk.CTkButton(train_window, text="Save", command=save_knowledge).pack(pady=20)
+        r, g, b = base_color_rgb
+        intensity = 0.4 + 0.3 * glow_intensity
+        if is_hover:
+            intensity = min(1.0, intensity + 0.3)
 
-    def send_message(self, event=None):
-        user_text = self.text_input.get()
-        if not user_text:
-            return
+        # Draw outer glow rings
+        for i in range(8, 0, -1):
+            radius = 60 + i * 8
+            alpha = intensity * (1.0 - i / 10.0) * 0.4
+            cr = int(r * alpha)
+            cg = int(g * alpha)
+            cb = int(b * alpha)
+            color = f"#{cr:02x}{cg:02x}{cb:02x}"
+            canvas.create_oval(
+                cx - radius, cy - radius, cx + radius, cy + radius,
+                outline=color, width=2
+            )
 
-        self.chat_display.configure(state="normal")
-        self.chat_display.insert("end", f"You: {user_text}\n\n")
-        self.chat_display.configure(state="disabled")
-        self.text_input.delete(0, "end")
+        # Main button circle
+        btn_r = 55
+        fill_alpha = 0.15 if not is_hover else 0.3
+        fr = int(r * fill_alpha)
+        fg_ = int(g * fill_alpha)
+        fb = int(b * fill_alpha)
+        fill_color = f"#{max(fr,1):02x}{max(fg_,1):02x}{max(fb,1):02x}"
 
-        self.typing_indicator.start_pulse()
-        
-        threading.Thread(target=self.process_friday_response, args=(user_text,), daemon=True).start()
+        border_alpha = 0.7 if not is_hover else 1.0
+        br = int(min(255, r * border_alpha))
+        bg_ = int(min(255, g * border_alpha))
+        bb = int(min(255, b * border_alpha))
+        border_color = f"#{br:02x}{bg_:02x}{bb:02x}"
 
-    def process_friday_response(self, text):
-        answer = self.brain.get_answer(text)
-        self.after(500, self.display_friday_response, answer)
+        canvas.create_oval(
+            cx - btn_r, cy - btn_r, cx + btn_r, cy + btn_r,
+            fill=fill_color, outline=border_color, width=2
+        )
 
-    def display_friday_response(self, answer):
-        self.typing_indicator.stop_pulse()
-        self.chat_display.configure(state="normal")
-        if answer:
-            self.chat_display.insert("end", f"Friday: {answer}\n\n")
-        else:
-            self.chat_display.insert("end", "Friday: I don't know that yet. Please use the Train Brain button.\n\n")
-        self.chat_display.configure(state="disabled")
+        # Label text
+        text_alpha = 0.8 if not is_hover else 1.0
+        tr = int(min(255, r * text_alpha))
+        tg = int(min(255, g * text_alpha))
+        tb = int(min(255, b * text_alpha))
+        text_color = f"#{max(tr,1):02x}{max(tg,1):02x}{max(tb,1):02x}"
+
+        canvas.create_text(
+            cx, cy,
+            text=label,
+            font=("Segoe UI", 20, "bold"),
+            fill=text_color
+        )
+
+        # Subtitle
+        sub_text = "Text Chat" if label == "FRIDAY" else "Voice Control"
+        canvas.create_text(
+            cx, cy + 80,
+            text=sub_text,
+            font=("Segoe UI Light", 11),
+            fill="#555555"
+        )
+
+    def _animate_glow(self):
+        self.glow_phase += 0.05
+        glow = (math.sin(self.glow_phase) + 1) / 2  # 0..1
+
+        # FRIDAY = cyan (0, 255, 255)
+        self._draw_glowing_button(
+            self.friday_canvas, "FRIDAY",
+            (0, 255, 255), glow, self.friday_hover
+        )
+
+        # JARVIS = gold (255, 215, 0)
+        self._draw_glowing_button(
+            self.jarvis_canvas, "JARVIS",
+            (255, 215, 0), glow, self.jarvis_hover
+        )
+
+        self.after(50, self._animate_glow)
+
+    def launch_friday(self):
+        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "friday.py")
+        env = os.environ.copy()
+        env['OPENBLAS_NUM_THREADS'] = '1'
+        env['OMP_NUM_THREADS'] = '1'
+        subprocess.Popen([sys.executable, script_path], env=env)
+
+    def launch_jarvis(self):
+        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jarvis.py")
+        env = os.environ.copy()
+        env['OPENBLAS_NUM_THREADS'] = '1'
+        env['OMP_NUM_THREADS'] = '1'
+        subprocess.Popen([sys.executable, script_path], env=env)
+
 
 if __name__ == "__main__":
-    app = AssistantUI()
+    ctk.set_appearance_mode("dark")
+    app = ModeSelector()
     app.mainloop()

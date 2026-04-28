@@ -1,5 +1,6 @@
 import pickle
 import pandas as pd
+import requests
 from sentence_transformers import SentenceTransformer, util
 import re
 
@@ -42,28 +43,53 @@ class UnifiedBrain:
                 return None
         return None
 
+    def ask_ollama(self, query):
+        """Fallback to Ollama Mistral when CSV has no match."""
+        for attempt in range(2):
+            try:
+                response = requests.post(
+                    'http://localhost:11434/api/generate',
+                    json={
+                        "model": "mistral:7b",
+                        "prompt": query,
+                        "stream": False
+                    },
+                    timeout=120
+                )
+                data = response.json()
+                result = data.get('response', '').strip()
+                if result:
+                    return result
+            except requests.exceptions.Timeout:
+                print(f"[Brain] Ollama timeout (attempt {attempt + 1}/2)")
+                continue
+            except Exception as e:
+                print(f"[Brain] Ollama error: {e}")
+                break
+        return "I'm having trouble connecting to my brain right now."
+
     # Threshold raised back to 0.60 because the upgraded model is more precise
     def get_answer(self, user_query, threshold=0.60):
+        # 1. Check math first
         math_result = self.evaluate_math(user_query)
         if math_result:
             return math_result
 
-        if self.embeddings is None or len(self.knowledge_base) == 0:
-            return "My database is completely empty. I have nothing to search!"
-            
-        try:
-            query_embedding = self.model.encode(user_query, convert_to_tensor=True)
-            hits = util.semantic_search(query_embedding, self.embeddings, top_k=1)
-            
-            if not hits or not hits[0]:
-                return None
+        # 2. Check CSV knowledge base
+        if self.embeddings is not None and len(self.knowledge_base) > 0:
+            try:
+                query_embedding = self.model.encode(user_query, convert_to_tensor=True)
+                hits = util.semantic_search(query_embedding, self.embeddings, top_k=1)
                 
-            best_hit = hits[0][0]
-            matched_q = self.knowledge_base[best_hit['corpus_id']]['question']
-            print(f"Intent Match: '{matched_q}' | Confidence Score: {best_hit['score']:.2f}")
-            
-            if best_hit['score'] >= threshold:
-                return self.knowledge_base[best_hit['corpus_id']]['answer']
-            return None
-        except Exception as e:
-            return f"[Brain Error]: {str(e)}"
+                if hits and hits[0]:
+                    best_hit = hits[0][0]
+                    matched_q = self.knowledge_base[best_hit['corpus_id']]['question']
+                    print(f"Intent Match: '{matched_q}' | Confidence Score: {best_hit['score']:.2f}")
+                    
+                    if best_hit['score'] >= threshold:
+                        return self.knowledge_base[best_hit['corpus_id']]['answer']
+            except Exception as e:
+                print(f"[Brain CSV Error]: {str(e)}")
+
+        # 3. Fall back to Ollama Mistral
+        return self.ask_ollama(user_query)
